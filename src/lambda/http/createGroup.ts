@@ -1,10 +1,14 @@
-import { APIGatewayProxyHandler, APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda'
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda'
 import 'source-map-support/register'
 
 import { CreateGroupRequest } from '../../requests/CreateGroupRequest'
 import { createGroup } from '../../businessLogic/groups'
 
-export const handler: APIGatewayProxyHandler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+import * as middy from 'middy'
+import { warmup } from 'middy/middlewares'
+
+//export const handler: APIGatewayProxyHandler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+export const handler = middy(async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('Processing event: ', event)
 
   const newGroup: CreateGroupRequest = JSON.parse(event.body)
@@ -24,4 +28,11 @@ export const handler: APIGatewayProxyHandler = async (event: APIGatewayProxyEven
       newItem
     })
   }
-}
+})
+
+handler.use(
+  warmup({
+    isWarmingUp: event => event.source === 'serverless-plugin-warmup',
+    onWarmup: event => { return 'Is warming up' }
+  })
+)

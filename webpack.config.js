@@ -4,6 +4,7 @@ const slsw = require('serverless-webpack');
 module.exports = {
   mode: slsw.lib.webpack.isLocal ? 'development' : 'production',
   entry: slsw.lib.entries,
+  externals: [{ "aws-sdk": "commonjs aws-sdk" }],
   devtool: 'source-map',
   resolve: {
     extensions: ['.js', '.jsx', '.json', '.ts', '.tsx'],

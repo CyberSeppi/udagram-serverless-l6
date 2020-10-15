@@ -5,10 +5,15 @@ plugins:
   - serverless-webpack
   - serverless-reqvalidator-plugin
   - serverless-aws-documentation
-  - serverless-deployment-bucket
+  - serverless-plugin-canary-deployments
+  - serverless-iam-roles-per-function
   - serverless-dynamodb-local
-  - serverless-offline
-  - serverless-plugin-warmup
+  - serverless-offline  
+  - serverless-deployment-bucket
+
+# Uncomment to enable individual packaging
+# package:
+#   individually: true
 
 provider:
   name: aws
@@ -16,10 +21,13 @@ provider:
 
   stage: ${opt:stage, 'dev'}
   region: ${opt:region, 'us-east-2'}
-
+  
   deploymentBucket:
     name: ${self:service.name}-${self:provider.stage}
 
+  tracing:
+    lambda: true
+    apiGateway: true
 
   environment:
     GROUPS_TABLE: Groups-${self:provider.stage}
@@ -31,10 +39,13 @@ provider:
     THUMBNAILS_S3_BUCKET: serverless-jprentl-thumbnail-${self:provider.stage}
     AUTH_0_SECRET_ID: Auth0Secret-${self:provider.stage}
     AUTH_0_SECRET_FIELD: auth0Secret
-    #AUTH0_CERT: ${file(./env/environment_var.json):ENVIRONMENT.AUTH0_CERT}
-    AUTH0_CERT: ${file(./env/environment_var.txt)}
 
   iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - codedeploy:*
+      Resource:
+        - '*'
     - Effect: Allow
       Action:
         - dynamodb:Scan
@@ -74,9 +85,18 @@ provider:
         - kms:Decrypt
       Resource: !GetAtt KMSKey.Arn
 
-
 custom:
   topicName: imagesTopic-${self:provider.stage}
+
+  serverless-offline:
+    port: 3003
+
+  dynamodb:
+    start:
+      port: 8000
+      inMemory: true
+      migrate: true
+
   documentation:
     api:
       info:
@@ -90,24 +110,14 @@ custom:
       - name: ImageRequest
         contentType: application/json
         schema: ${file(models/create-image-request.json)}
-  serverless-offline:  
-    port: 3003
-  dynamodb:
-    stages:
-      - dev
-  warmup:
-    enabled: true
-    name: lambda-warmup-${self:provider.stage}
-    payload:
-      isWarmup: true
-    concurreny: 5
-    
+
 functions:
+
   RS256Auth:
-      handler: src/lambda/auth/rs256Auth0Authorizer.handler
+    handler: src/lambda/auth/rs256Auth0Authorizer.handler
 
   Auth:
-    handler: 'src/lambda/auth/auth0Authorizer.handler'
+    handler: src/lambda/auth/auth0Authorizer.handler
 
   GetGroups:
     handler: src/lambda/http/getGroups.handler
@@ -119,8 +129,6 @@ functions:
 
   CreateGroup:
     handler: src/lambda/http/createGroup.handler
-    environment:
-      AUTH0_CERT: ${self:provider.environment.AUTH0_CERT}
     events:
       - http:
           method: post
@@ -133,6 +141,9 @@ functions:
             description: Create a new group
             requestModels:
               'application/json': GroupRequest
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
 
   GetImages:
     handler: src/lambda/http/getImages.handler
@@ -141,17 +152,24 @@ functions:
           method: get
           path: groups/{groupId}/images
           cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.IMAGES_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.GROUPS_TABLE}
 
   CreateImage:
     handler: src/lambda/http/createImage.handler
-    environment:
-      AUTH0_CERT: ${self:provider.environment.AUTH0_CERT}
     events:
       - http:
           method: post
           authorizer: RS256Auth
           path: groups/{groupId}/images
-          cors: true          
+          cors: true
           reqValidatorName: RequestBodyValidator
           documentation:
             summary: Create a new image
@@ -201,7 +219,6 @@ functions:
       - websocket:
           route: $disconnect
 
-  # Uncomment if you want to enable Elasticsearch sync
   # SyncWithElasticsearch:
   #   environment:
   #     ES_ENDPOINT: !GetAtt ImagesSearch.DomainEndpoint
@@ -213,7 +230,6 @@ functions:
 
 resources:
   Resources:
-
     GatewayResponseDefault4XX:
       Type: AWS::ApiGateway::GatewayResponse
       Properties:
@@ -224,7 +240,6 @@ resources:
         ResponseType: DEFAULT_4XX
         RestApiId:
           Ref: ApiGatewayRestApi
-
 
     GroupsDynamoDBTable:
       Type: AWS::DynamoDB::Table
@@ -355,44 +370,6 @@ resources:
         DisplayName: Image bucket topic
         TopicName: ${self:custom.topicName}
 
-    KMSKey:
-      Type: AWS::KMS::Key
-      Properties:
-        Description: KMS Key to encrypt Auth0 secret
-        KeyPolicy:
-          Version: '2012-10-17'
-          Id: key-default-1
-          Statement:
-            - Sid: Allow admistration of the key
-              Effect: Allow
-              Principal:
-                AWS:
-                  Fn::Join:
-                  - ':'
-                  - - 'arn:aws:iam:'
-                    - Ref: AWS::AccountId
-                    - 'root'
-              Action:
-                - 'kms:*'
-              Resource: '*'
-
-    KMSKeyAlias:
-      Type: AWS::KMS::Alias
-      Properties:
-        AliasName: alias/auth0Key-${self:provider.stage}
-        TargetKeyId: !Ref KMSKey
-
-    Auth0Secret:
-      Type: AWS::SecretsManager::Secret
-      Properties:
-        Name: ${self:provider.environment.AUTH_0_SECRET_ID}
-        Description: Auth0 secret
-        KmsKeyId: !Ref KMSKey
-
-          
-
-    
-    # Uncomment if you want to create Elasticsearch
     # ImagesSearch:
     #   Type: AWS::Elasticsearch::Domain
     #   Properties:
@@ -418,3 +395,38 @@ resources:
     #             AWS: '*'
     #           Action: 'es:*'
     #           Resource: '*'
+
+    KMSKey:
+      Type: AWS::KMS::Key
+      Properties:
+        Description: KMS key to encrypt Auth0 secret
+        KeyPolicy:
+          Version: '2012-10-17'
+          Id: key-default-1
+          Statement:
+            - Sid: Allow administration of the key
+              Effect: Allow
+              Principal:
+                AWS:
+                  Fn::Join:
+                  - ':'
+                  - - 'arn:aws:iam:'
+                    - Ref: AWS::AccountId
+                    - 'root'
+              Action:
+                - 'kms:*'
+              Resource: '*'
+
+    KMSKeyAlias:
+      Type: AWS::KMS::Alias
+      Properties:
+        AliasName: alias/auth0Key-${self:provider.stage}
+        TargetKeyId: !Ref KMSKey
+
+    Auth0Secret:
+      Type: AWS::SecretsManager::Secret
+      Properties:
+        Name: ${self:provider.environment.AUTH_0_SECRET_ID}
+        Description: Auth0 secret
+        KmsKeyId: !Ref KMSKey
+
