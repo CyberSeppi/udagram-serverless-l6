@@ -9,6 +9,10 @@ plugins:
   - serverless-dynamodb-local
   - serverless-offline
   - serverless-plugin-warmup
+  - serverless-iam-roles-per-function
+  
+package:
+  individually: true
 
 provider:
   name: aws
@@ -73,6 +77,16 @@ provider:
       Action:
         - kms:Decrypt
       Resource: !GetAtt KMSKey.Arn
+    - Effect: 'Allow' # Warmer lambda to invoke the functions to be warmed
+      Action:
+        - 'lambda:InvokeFunction'
+      Resource:
+      - Fn::Join:
+        - ':'
+        - - arn:aws:lambda
+          - Ref: AWS::Region
+          - Ref: AWS::AccountId
+          - function:${self:service}-${opt:stage, self:provider.stage}-*
 
 
 custom:
@@ -96,21 +110,28 @@ custom:
     stages:
       - dev
   warmup:
-    enabled: true
+    enabled: false
     name: lambda-warmup-${self:provider.stage}
     payload:
       isWarmup: true
     concurreny: 5
-    
+    prewarm: true
+
 functions:
   RS256Auth:
-      handler: src/lambda/auth/rs256Auth0Authorizer.handler
+    handler: src/lambda/auth/rs256Auth0Authorizer.handler
+    warmup:
+      enabled: false
 
   Auth:
     handler: 'src/lambda/auth/auth0Authorizer.handler'
+    warmup:
+      enabled: false
 
   GetGroups:
     handler: src/lambda/http/getGroups.handler
+    warmup:
+      enabled: false
     events:
       - http:
           method: get
@@ -119,6 +140,8 @@ functions:
 
   CreateGroup:
     handler: src/lambda/http/createGroup.handler
+    warmup:
+      enabled: false
     environment:
       AUTH0_CERT: ${self:provider.environment.AUTH0_CERT}
     events:
@@ -136,14 +159,25 @@ functions:
 
   GetImages:
     handler: src/lambda/http/getImages.handler
+    warmup:
+      enabled: false
     events:
       - http:
           method: get
           path: groups/{groupId}/images
           cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/*
+
 
   CreateImage:
     handler: src/lambda/http/createImage.handler
+    warmup:
+      enabled: false
     environment:
       AUTH0_CERT: ${self:provider.environment.AUTH0_CERT}
     events:
@@ -165,6 +199,8 @@ functions:
       API_ID:
         Ref: WebsocketsApi
     handler: src/lambda/s3/sendNotifications.handler
+    warmup:
+      enabled: false
     events:
       - sns:
           arn:
@@ -178,6 +214,8 @@ functions:
 
   ResizeImage:
     handler: src/lambda/s3/resizeImage.handler
+    warmup:
+      enabled: false
     events:
       - sns:
           arn:
@@ -191,12 +229,16 @@ functions:
 
   ConnectHandler:
     handler: src/lambda/websocket/connect.handler
+    warmup:
+      enabled: false
     events:
       - websocket:
           route: $connect
 
   DisconnectHandler:
     handler: src/lambda/websocket/disconnect.handler
+    warmup:
+      enabled: false
     events:
       - websocket:
           route: $disconnect

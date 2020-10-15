@@ -33,6 +33,6 @@ export const handler = middy(async (event: APIGatewayProxyEvent): Promise<APIGat
 handler.use(
   warmup({
     isWarmingUp: event => event.source === 'serverless-plugin-warmup',
-    onWarmup: event => { return 'Is warming up' }
+    onWarmup: event => event.return('Is warming up')
   })
 )
